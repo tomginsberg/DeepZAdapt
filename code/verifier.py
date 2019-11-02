@@ -6,7 +6,7 @@ DEVICE = 'cpu'
 INPUT_SIZE = 28
 
 
-def analyze(net, inputs, eps, true_label):
+def analyze(net: torch.nn.Module, inputs: torch.FloatTensor, eps: float, true_label: int):
     return 0
 
 
