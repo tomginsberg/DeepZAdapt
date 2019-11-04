@@ -9,7 +9,7 @@ def box(x):
     for all i, -1 <= eps_i <= 1, x = (x0 + eps_1 * x1 + eps_2 * x2 + ...)
     :return: (l, u) where l and u are box bounds
     """
-    radius = torch.sum(torch.abs(x[1:]))
+    radius = torch.sum(torch.abs(x[1:].clone()))
     return x[0] - radius, x[0] + radius
 
 
@@ -63,7 +63,7 @@ if __name__ == '__main__':
         loss_history = np.empty((attempts, steps_per_attempt))
         num_layers = weights.shape[0]
         # Initialize weights and biases
-        x0, y0, eta = 1 / 4, 1 / 5, .1
+        x0, y0, eta = 1 / 8, 1 / 8, .1
         for attempt in range(attempts):
             # Initialize lambdas
             lambdas = torch.rand(num_layers, 2, requires_grad=True)
