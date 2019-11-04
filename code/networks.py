@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import transformers
+import numpy as np
+from zonotpe_utils import Hypercube
 
 
 class Normalization(nn.Module):
@@ -18,12 +21,15 @@ class FullyConnected(nn.Module):
     def __init__(self, device, input_size, fc_layers):
         super(FullyConnected, self).__init__()
 
-        layers = [Normalization(device), nn.Flatten()]
+        layers = [Normalization(device)]
         prev_fc_size = input_size * input_size
+        self.lambdas = np.empty(len(fc_layers)).astype(torch.Tensor)
         for i, fc_size in enumerate(fc_layers):
             layers += [nn.Linear(prev_fc_size, fc_size)]
             if i + 1 < len(fc_layers):
-                layers += [nn.ReLU()]
+                print(fc_size)
+                self.lambdas[i] = (torch.rand(fc_size, requires_grad=True))
+                layers += [transformers.ReLU(self.lambdas[i])]
             prev_fc_size = fc_size
         self.layers = nn.Sequential(*layers)
 

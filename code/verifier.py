@@ -1,12 +1,14 @@
 import argparse
 import torch
 from networks import FullyConnected, Conv
+from zonotpe_utils import Hypercube
 
 DEVICE = 'cpu'
 INPUT_SIZE = 28
 
 
-def analyze(net: torch.nn.Module, inputs: torch.FloatTensor, eps: float, true_label: int):
+def analyze(net, inputs, eps, true_label):
+    inputs = Hypercube(eps)(inputs)
     return 0
 
 
