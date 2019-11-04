@@ -1,5 +1,7 @@
 import torch
-from torch import tensor, matmul
+from torch import tensor
+from torch.nn.parameter import Parameter
+from torch.autograd import Function
 
 
 def box(x):
@@ -9,49 +11,80 @@ def box(x):
     for all i, -1 <= eps_i <= 1, x = (x0 + eps_1 * x1 + eps_2 * x2 + ...)
     :return: (l, u) where l and u are box bounds
     """
-    radius = torch.sum(torch.abs(x[1:].clone()))
+    radius = torch.sum(torch.abs(x[1:]))
     return x[0] - radius, x[0] + radius
 
 
 class ReLU(torch.nn.Module):
-    def __init__(self, lambdas):
+    def __init__(self, in_features):
         super(ReLU, self).__init__()
-        self.lambdas = lambdas
+        self.lambdas = Parameter(torch.rand(in_features))
 
-    def forward(self, layer):
-        boxes = [box(n) for n in layer]
-        _, epsilon_id = layer.shape
-        for i, (l, u), lmb in zip(range(layer.shape[0]), boxes, self.lambdas):
+    def forward(self, x):
+        x = torch.transpose(x, 0, 1)
+        boxes = map(box, x)
+        _, epsilon_id = x.shape
+        for i, (l, u), lmb in zip(range(x.shape[0]), boxes, self.lambdas):
             if u <= 0:
-                # FixMe
-                layer[i] *= 0
+                x[i] = x[i] * 0
             elif l < 0:
-                layer = torch.nn.ConstantPad2d((0, 1), 0)(layer)
-                layer[i] *= lmb
+                x = torch.nn.ZeroPad2d((0, 1))(x)
+                x[i] = x[i] * lmb
 
                 if lmb >= u / (u - 1):
-                    layer[i][epsilon_id] = -l * lmb / 2
+                    x[i, epsilon_id] = -l * lmb / 2
                 else:
-                    layer[i][epsilon_id] = u * (1 - lmb)
+                    x[i, epsilon_id] = u * (1 - lmb)
 
-                layer[i][0] += layer[i][epsilon_id]
+                x[i, 0] = x[i, 0] + x[i, epsilon_id]
                 epsilon_id += 1
 
-        return layer
+        return torch.transpose(x, 0, 1)
 
 
-def bias(layer, bias):
-    """
-    Adds a bias vector to the center of a zonotope without affecting the noise terms
-    :param layer:
-    :param bias:
-    :return:
-    """
-    # A different and probably worse approach is to pad right and matrix add
-    # return layer + torch.nn.ConstantPad2d((0, layer.shape[1] - 1),0)(b)
-    for n, b in zip(layer, bias):
-        n[0] += b[0]
-    return layer
+class Affine(torch.nn.Module):
+    def __init__(self, in_features, out_features):
+        super(Affine, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        # These tensors are automatically allocated with garbage values and will be loaded from a state_dict
+        self.weight = Parameter(torch.Tensor(out_features, in_features), requires_grad = False)
+        self.bias = Parameter(torch.Tensor(out_features), requires_grad = False)
+
+    def forward(self, x):
+        # In PyTorch documentation nn.Linear is defined as x.W^(T) + b
+        x = torch.matmul(x, torch.transpose(self.weight, 0, 1))
+        x[0] = x[0] + self.bias
+        return x
+
+    def extra_repr(self):
+        return 'in_features={}, out_features={}'.format(
+            self.in_features, self.out_features
+        )
+
+
+class Normalization(torch.nn.Module):
+
+    def __init__(self, device):
+        super(Normalization, self).__init__()
+        self.mean = torch.FloatTensor([0.1307]).view((1, 1, 1, 1)).to(device)
+        self.sigma = torch.FloatTensor([0.3081]).view((1, 1, 1, 1)).to(device)
+
+    def forward(self, x):
+        # PyTorch doesnt like in place operations on variables with gradients
+        # (i.e use x = x + 1 vs x += 1)
+        x[0] = x[0] - self.mean
+        return x / self.sigma
+
+
+class Flatten(torch.nn.Module):
+
+    def __init__(self):
+        super(Flatten, self).__init__()
+
+    def forward(self, x):
+        # Hardcoded for MNIST so we can catch any bugs is this breaks
+        return torch.reshape(x, (x.shape[1], 784))
 
 
 if __name__ == '__main__':
@@ -70,10 +103,10 @@ if __name__ == '__main__':
             # Gradient descent loop
             for step in range(steps_per_attempt):
                 # First layer of network
-                layer = tensor([[x0, eta, 0], [y0, 0, eta]], requires_grad=True)
+                layer = torch.transpose(tensor([[x0, eta, 0], [y0, 0, eta]]), 0, 1).requires_grad_()
                 # apply network layers
                 for w, b, l in zip(weights, biases, lambdas):
-                    layer = matmul(w, layer)
+                    layer = torch.matmul(w, layer)
                     for n, b_ in zip(layer, b):
                         n[0] += b_[0]
                     layer = ReLU(l)(layer)

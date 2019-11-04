@@ -1,14 +1,25 @@
 import argparse
 import torch
-from networks import FullyConnected, Conv
-from zonotpe_utils import Hypercube
+from networks import FullyConnected, Conv, FullyConnectedVerifiable, ConvVerifiable
+from zonotpe_utils import hypercube1d, hypercube2d
 
 DEVICE = 'cpu'
 INPUT_SIZE = 28
 
 
-def analyze(net, inputs, eps, true_label):
-    inputs = Hypercube(eps)(inputs)
+def analyze(net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int):
+    if net.architecture == 'fcn':
+        # Fully connected
+        inputs = hypercube1d(inputs.view(784), eps)
+        verify_net = FullyConnectedVerifiable(DEVICE, INPUT_SIZE, net.fc_layers).to(DEVICE)
+    else:
+        # CNN
+        inputs = hypercube2d(inputs, eps)
+        verify_net = ConvVerifiable(DEVICE, INPUT_SIZE, net.conv_layers, net.fc_layers).to(DEVICE)
+
+    verify_net.load_state_dict(net.state_dict())
+    optim = torch.optim.Adam(verify_net.parameters())
+    # Time to optimize
     return 0
 
 
