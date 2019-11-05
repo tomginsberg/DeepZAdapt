@@ -1,6 +1,6 @@
 import argparse
 import torch
-from networks import FullyConnected, Conv, FullyConnectedVerifiable, ConvVerifiable
+from networks import FullyConnected, Conv, FullyConnectedVerifiable, ConvVerifiable, UnitClipper
 from zonotpe_utils import hypercube1d, hypercube2d, box_upper
 
 DEVICE = 'cpu'
@@ -8,6 +8,8 @@ INPUT_SIZE = 28
 
 
 def analyze(net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int):
+    print("True Label: ", true_label)
+    clipper = UnitClipper()
     if net.architecture == 'fcn':
         # Fully connected
         inputs = hypercube1d(inputs.view(1, 784), eps)
@@ -21,21 +23,23 @@ def analyze(net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: 
 
     # Time to optimize
     optim = torch.optim.Adam(verify_net.parameters())
-    while True:
+    for _ in range(30):
         optim.zero_grad()
-        outputs = verify_net(inputs)
+        outputs = verify_net(inputs).t()
         # Compute how much bigger every label is be from the true label in the worst case
         losses = torch.stack(
-            [box_upper(outputs[i] - outputs[true_label]) for i in range(len(outputs)) if i != true_label])
-        # Net is verified is the sign of every loss is negative
-        if torch.sum(torch.sign(losses)) == - losses.shape[0]:
+            [box_upper(outputs[i] - outputs[true_label]) for i in range(len(outputs))])
+
+        if (losses < 0).all():
             return True
 
         # Todo: Think of good ways to combine the losses
         loss = torch.sum(losses)
+        # print(losses)
         print(loss)
         loss.backward()
         optim.step()
+        verify_net.apply(clipper)
 
 
 def main():

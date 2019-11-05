@@ -1,7 +1,6 @@
 import torch
 from torch import tensor
 from torch.nn.parameter import Parameter
-from torch.autograd import Function
 
 
 def box(x):
@@ -19,10 +18,10 @@ def box(x):
 class ReLU(torch.nn.Module):
     def __init__(self, in_features):
         super(ReLU, self).__init__()
+        # Maybe random lambdas is not the best to do
         self.lambdas = Parameter(torch.rand(in_features))
 
     def forward(self, x):
-        # x = x.clone()
         x = torch.transpose(x, 0, 1)
         boxes = [box(i) for i in x]
         new_errors = sum([int(l < 0 < u) for l, u in boxes])
@@ -63,7 +62,6 @@ class Affine(torch.nn.Module):
         self.bias = Parameter(torch.Tensor(out_features), requires_grad=False)
 
     def forward(self, x):
-        # x = x.clone()
         # In PyTorch documentation nn.Linear is defined as x.W^(T) + b
         x = x.mm(self.weight.t())
         x[0] = x[0] + self.bias
@@ -83,7 +81,6 @@ class Normalization(torch.nn.Module):
         self.sigma = torch.tensor(0.3081).to(device)
 
     def forward(self, x):
-        # x = x.clone()
         # PyTorch doesnt like in place operations on variables with gradients
         # (i.e use x = x + 1 vs x += 1)
         x[0] = x[0] - self.mean

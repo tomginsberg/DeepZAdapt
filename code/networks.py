@@ -132,6 +132,13 @@ class Conv(nn.Module):
         return self.layers(x)
 
 
+class UnitClipper:
+    def __call__(self, module):
+        if hasattr(module, 'lambdas'):
+            lambdas = module.lambdas.data
+            lambdas.clamp_(0, 1)
+
+
 if __name__ == '__main__':
     from zonotpe_utils import hypercube1d
     from transformers import box
