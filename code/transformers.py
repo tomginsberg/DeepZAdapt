@@ -11,6 +11,7 @@ def box(x):
     for all i, -1 <= eps_i <= 1, x = (x0 + eps_1 * x1 + eps_2 * x2 + ...)
     :return: (l, u) where l and u are box bounds
     """
+    # x = x.clone()
     radius = torch.sum(torch.abs(x[1:]))
     return x[0] - radius, x[0] + radius
 
@@ -21,25 +22,35 @@ class ReLU(torch.nn.Module):
         self.lambdas = Parameter(torch.rand(in_features))
 
     def forward(self, x):
+        # x = x.clone()
         x = torch.transpose(x, 0, 1)
-        boxes = map(box, x)
+        boxes = [box(i) for i in x]
+        new_errors = sum([int(l < 0 < u) for l, u in boxes])
         _, epsilon_id = x.shape
-        for i, (l, u), lmb in zip(range(x.shape[0]), boxes, self.lambdas):
-            if u <= 0:
-                x[i] = x[i] * 0
-            elif l < 0:
-                x = torch.nn.ZeroPad2d((0, 1))(x)
-                x[i] = x[i] * lmb
+        x = torch.nn.ZeroPad2d((0, new_errors))(x)
+        new_layer = []
 
-                if lmb >= u / (u - 1):
-                    x[i, epsilon_id] = -l * lmb / 2
-                else:
-                    x[i, epsilon_id] = u * (1 - lmb)
+        for xi, (l, u), lmb in zip(x, boxes, self.lambdas):
+            xi_new, epsilon_id = relu(xi, lmb, l, u, epsilon_id)
+            new_layer.append(xi_new)
 
-                x[i, 0] = x[i, 0] + x[i, epsilon_id]
-                epsilon_id += 1
+        return torch.transpose(torch.stack(new_layer), 0, 1)
 
-        return torch.transpose(x, 0, 1)
+
+def relu(x, lmb, l, u, epsilon_id):
+    if u <= 0:
+        x = x * 0
+    elif l < 0:
+        x = x * lmb
+
+        if lmb >= u / (u - 1):
+            x[epsilon_id] = -l * lmb / 2
+        else:
+            x[epsilon_id] = u * (1 - lmb)
+
+        x[0] = x[0] + x[epsilon_id]
+        epsilon_id += 1
+    return x, epsilon_id
 
 
 class Affine(torch.nn.Module):
@@ -48,12 +59,13 @@ class Affine(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         # These tensors are automatically allocated with garbage values and will be loaded from a state_dict
-        self.weight = Parameter(torch.Tensor(out_features, in_features), requires_grad = False)
-        self.bias = Parameter(torch.Tensor(out_features), requires_grad = False)
+        self.weight = Parameter(torch.Tensor(out_features, in_features), requires_grad=False)
+        self.bias = Parameter(torch.Tensor(out_features), requires_grad=False)
 
     def forward(self, x):
+        # x = x.clone()
         # In PyTorch documentation nn.Linear is defined as x.W^(T) + b
-        x = torch.matmul(x, torch.transpose(self.weight, 0, 1))
+        x = x.mm(self.weight.t())
         x[0] = x[0] + self.bias
         return x
 
@@ -67,10 +79,11 @@ class Normalization(torch.nn.Module):
 
     def __init__(self, device):
         super(Normalization, self).__init__()
-        self.mean = torch.FloatTensor([0.1307]).view((1, 1, 1, 1)).to(device)
-        self.sigma = torch.FloatTensor([0.3081]).view((1, 1, 1, 1)).to(device)
+        self.mean = torch.tensor(0.1307).to(device)
+        self.sigma = torch.tensor(0.3081).to(device)
 
     def forward(self, x):
+        # x = x.clone()
         # PyTorch doesnt like in place operations on variables with gradients
         # (i.e use x = x + 1 vs x += 1)
         x[0] = x[0] - self.mean

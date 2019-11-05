@@ -1,10 +1,11 @@
-from torch import cat, eye, Tensor, zeros, transpose
+import torch
+from torch import cat, eye, Tensor, zeros
 from math import floor
 
 
 def hypercube1d(x: Tensor, eps):
     # x must be a 1D tensor
-    return cat((x.expand(1, x.shape[0]), eps * eye(x.shape[0])))
+    return cat((x, eps * eye(x.shape[1])))
 
 
 def hypercube2d(x: Tensor, eps):
@@ -18,3 +19,7 @@ def hypercube2d(x: Tensor, eps):
         z[0, i, floor(j), i % n] = eps
         j += 1 / n
     return cat((x, z), 1)
+
+
+def box_upper(x):
+    return x[0] + torch.sum(torch.abs(x[1:]))

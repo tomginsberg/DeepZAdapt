@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import transformers
+from torch.nn.parameter import Parameter
 
 
 class Normalization(nn.Module):
@@ -30,6 +31,17 @@ class FullyConnectedVerifiable(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
+
+    def load_state_dict(self, state_dict, **kwargs):
+
+        own_state = self.state_dict()
+        for name, param in state_dict.items():
+            if name not in own_state:
+                continue
+            if isinstance(param, Parameter):
+                # backwards compatibility for serialized parameters
+                param = param.data
+            own_state[name].copy_(param)
 
 
 class ConvVerifiable(nn.Module):
@@ -118,3 +130,22 @@ class Conv(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
+
+
+if __name__ == '__main__':
+    from zonotpe_utils import hypercube1d
+    from transformers import box
+    import torch.optim as optim
+
+    net = FullyConnectedVerifiable('cpu', 2, [4, 2])
+    data = hypercube1d(torch.rand(1, 4), 1)
+    with torch.autograd.set_detect_anomaly(True):
+        optimizer = optim.Adam(net.parameters())
+        print(net.state_dict())
+        for epoch in range(10):
+            optimizer.zero_grad()
+            output = net(data)
+            loss = box(output[:, 1] - output[:, 0])[1]
+            print(loss)
+            loss.backward()
+            optimizer.step()
