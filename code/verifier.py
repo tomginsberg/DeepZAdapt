@@ -1,43 +1,51 @@
 import argparse
+from sys import argv
 import torch
-from networks import FullyConnected, Conv, FullyConnectedVerifiable, ConvVerifiable, UnitClipper
+from networks import FullyConnected, Conv, FullyConnectedVerifiable, ConvVerifiable, UnitClipper, filter_state_dict
 from zonotpe_utils import hypercube1d, hypercube2d, box_upper
+from time import time
+from transformers import Normalization, Normalization2D, PrepareInput1D, PrepareInput2D
+from glob import glob
 
+start_time = time()
 DEVICE = 'cpu'
 INPUT_SIZE = 28
 
 
 def analyze(net: torch.nn.Module, inputs: torch.Tensor, eps: float, true_label: int):
-    print("True Label: ", true_label)
     clipper = UnitClipper()
     if net.architecture == 'fcn':
         # Fully connected
-        inputs = hypercube1d(inputs.view(1, 784), eps)
-        verify_net = FullyConnectedVerifiable(DEVICE, INPUT_SIZE, net.fc_layers).to(DEVICE)
+        inputs = PrepareInput1D(DEVICE, eps)(inputs)
+        verify_net = FullyConnectedVerifiable(INPUT_SIZE, net.fc_layers).train()
     else:
         # CNN
-        inputs = hypercube2d(inputs, eps)
-        verify_net = ConvVerifiable(DEVICE, INPUT_SIZE, net.conv_layers, net.fc_layers).to(DEVICE)
+        inputs = PrepareInput2D(DEVICE, eps)(inputs)
+        verify_net = ConvVerifiable(INPUT_SIZE, net.conv_layers, net.fc_layers).train()
 
     verify_net.load_state_dict(net.state_dict())
 
-    # Time to optimize
-    optim = torch.optim.Adam(verify_net.parameters())
-    for _ in range(30):
+    # Run a forward pass once before instantiating optimizer to dynamically create learnable param.
+    verify_net(inputs)
+
+    optim = torch.optim.Adamax(verify_net.parameters(), lr=.5)
+
+    while True:
         optim.zero_grad()
+
         outputs = verify_net(inputs).t()
+
         # Compute how much bigger every label is be from the true label in the worst case
         losses = torch.stack(
-            [box_upper(outputs[i] - outputs[true_label]) for i in range(len(outputs))])
+            [box_upper(outputs[i] - outputs[true_label]) for i in range(len(outputs)) if i != true_label])
 
         if (losses < 0).all():
             return True
 
-        # Todo: Think of good ways to combine the losses
-        loss = torch.sum(losses)
-        # print(losses)
-        print(loss)
+        loss = torch.sum(torch.relu(losses))
+
         loss.backward()
+
         optim.step()
         verify_net.apply(clipper)
 
@@ -49,9 +57,9 @@ def main():
                         choices=['fc1', 'fc2', 'fc3', 'fc4', 'fc5', 'conv1', 'conv2', 'conv3', 'conv4', 'conv5'],
                         required=True,
                         help='Neural network to verify.')
+
     parser.add_argument('--spec', type=str, required=True, help='Test case to verify.')
     args = parser.parse_args()
-
     with open(args.spec, 'r') as f:
         lines = [line[:-1] for line in f.readlines()]
         true_label = int(lines[0])
@@ -86,9 +94,13 @@ def main():
     pred_label = outs.max(dim=1)[1].item()
     assert pred_label == true_label
 
-    if analyze(net, inputs, eps, true_label):
-        print('verified')
-    else:
+    try:
+        # If there are no learnable params, calling backwards() will throw an exception, which means initial bounds are not verifiable and cannot be optimized further
+        if analyze(net, inputs, eps, true_label):
+            print('verified')
+        else:
+            print('not verified')
+    except:
         print('not verified')
 
 

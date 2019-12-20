@@ -1,6 +1,8 @@
 import torch
 from torch import tensor
 from torch.nn.parameter import Parameter
+from zonotpe_utils import hypercube1d
+from torch.functional import F
 
 
 def box(x):
@@ -10,44 +12,64 @@ def box(x):
     for all i, -1 <= eps_i <= 1, x = (x0 + eps_1 * x1 + eps_2 * x2 + ...)
     :return: (l, u) where l and u are box bounds
     """
-    # x = x.clone()
     radius = torch.sum(torch.abs(x[1:]))
     return x[0] - radius, x[0] + radius
 
 
-class ReLU(torch.nn.Module):
-    def __init__(self, in_features):
-        super(ReLU, self).__init__()
-        # Maybe random lambdas is not the best to do
-        self.lambdas = Parameter(torch.rand(in_features))
+class ReLU2D(torch.nn.Module):
+    def __init__(self, in_features, learnable=False):
+        super(ReLU2D, self).__init__()
+        self.in_features = in_features
+        self.relu = ReLU(in_features, learnable=learnable)
 
     def forward(self, x):
-        x = torch.transpose(x, 0, 1)
-        boxes = [box(i) for i in x]
+        _, channels, n, _, = x.shape
+        # x = self.relu(x.view(channels * n * n, errs))
+        # return x.view(channels, n, n, x.shape[-1])
+        x = self.relu(x.flatten(1))
+        return x.view(x.shape[0], channels, n, n)
+
+
+class ReLU(torch.nn.Module):
+    def __init__(self, in_features, learnable=False):
+        super(ReLU, self).__init__()
+        self.lambdas = None
+        self.learnable = learnable
+
+    def forward(self, x):
+        x = x.t()
+        boxes = [box(l) for l in x]
         new_errors = sum([int(l < 0 < u) for l, u in boxes])
         _, epsilon_id = x.shape
         x = torch.nn.ZeroPad2d((0, new_errors))(x)
         new_layer = []
-
-        for xi, (l, u), lmb in zip(x, boxes, self.lambdas):
-            xi_new, epsilon_id = relu(xi, lmb, l, u, epsilon_id)
+        if self.lambdas is None:
+            # It appears that setting lambda to 0 for the edge case (abs(l)>>u) does not influence optimization much
+            # See logs Min Area Box Learnable Lambdas
+            # noinspection PyArgumentList
+            self.lambdas = torch.nn.ParameterList(
+                [Parameter((u / (u - l) + torch.randn(1) * .3 if l < 0 < u else torch.rand(1)).squeeze().clamp(0, 1),
+                           requires_grad=self.learnable) for (l, u) in boxes])
+        # noinspection PyTypeChecker
+        for xi, (l, u), lambda_ in zip(x, boxes, self.lambdas):
+            xi_new, epsilon_id = relu(xi, lambda_, l, u, epsilon_id)
             new_layer.append(xi_new)
+        return torch.stack(new_layer).t()
 
-        return torch.transpose(torch.stack(new_layer), 0, 1)
 
-
-def relu(x, lmb, l, u, epsilon_id):
+def relu(x: torch.Tensor, lambda_: torch.nn.Parameter, l: torch.Tensor, u: torch.Tensor, epsilon_id: int):
     if u <= 0:
-        x = x * 0
+        return torch.zeros_like(x), epsilon_id
     elif l < 0:
-        x = x * lmb
+        x = x.mul(lambda_)
 
-        if lmb >= u / (u - 1):
-            x[epsilon_id] = -l * lmb / 2
+        if lambda_ >= u / (u - l):
+            val = -l * lambda_ / 2
         else:
-            x[epsilon_id] = u * (1 - lmb)
+            val = u * (1 - lambda_) / 2
 
-        x[0] = x[0] + x[epsilon_id]
+        x[epsilon_id] += val
+        x[0] += val
         epsilon_id += 1
     return x, epsilon_id
 
@@ -62,10 +84,7 @@ class Affine(torch.nn.Module):
         self.bias = Parameter(torch.Tensor(out_features), requires_grad=False)
 
     def forward(self, x):
-        # In PyTorch documentation nn.Linear is defined as x.W^(T) + b
-        x = x.mm(self.weight.t())
-        x[0] = x[0] + self.bias
-        return x
+        return x.mm(self.weight.t()).index_add(0, tensor([0]), self.bias.unsqueeze(0))
 
     def extra_repr(self):
         return 'in_features={}, out_features={}'.format(
@@ -81,10 +100,51 @@ class Normalization(torch.nn.Module):
         self.sigma = torch.tensor(0.3081).to(device)
 
     def forward(self, x):
-        # PyTorch doesnt like in place operations on variables with gradients
-        # (i.e use x = x + 1 vs x += 1)
-        x[0] = x[0] - self.mean
-        return x / self.sigma
+        return x.index_add(0, tensor([0]), tensor([[-self.mean] * x.shape[1]])) / self.sigma
+
+
+class PrepareInput1D(torch.nn.Module):
+
+    def __init__(self, device, eps):
+        super(PrepareInput1D, self).__init__()
+        self.mean = torch.tensor(0.1307).to(device)
+        self.sigma = torch.tensor(0.3081).to(device)
+        self.eps = torch.tensor(eps).to(device)
+
+    def forward(self, x):
+        n = x.shape[-1]
+        return hypercube1d(x.flatten(), self.eps).index_add(0, tensor([0]),
+                                                            tensor([[-self.mean] * (n * n)])) / self.sigma
+
+
+class Normalization2D(torch.nn.Module):
+
+    def __init__(self, device):
+        super(Normalization2D, self).__init__()
+        self.mean = torch.tensor(0.1307).to(device)
+        self.sigma = torch.tensor(0.3081).to(device)
+
+    def forward(self, x, input_size=28):
+        return (x.index_add(0, tensor([0]),
+                            tensor([[-self.mean] * x.shape[1]])) / self.sigma).t().view(1,
+                                                                                        input_size, input_size,
+                                                                                        x.shape[0])
+
+
+class PrepareInput2D(torch.nn.Module):
+
+    def __init__(self, device, eps):
+        super(PrepareInput2D, self).__init__()
+        self.mean = torch.tensor(0.1307).to(device)
+        self.sigma = torch.tensor(0.3081).to(device)
+        self.eps = torch.tensor(eps).to(device)
+
+    def forward(self, x):
+        n = x.shape[-1]
+        return (hypercube1d(x.flatten(), self.eps).index_add(0, tensor([0]),
+                                                             tensor(
+                                                                 [[-self.mean] * (n * n)])) / self.sigma).view(
+            (n * n) + 1, 1, n, n)
 
 
 class Flatten(torch.nn.Module):
@@ -93,49 +153,18 @@ class Flatten(torch.nn.Module):
         super(Flatten, self).__init__()
 
     def forward(self, x):
-        # Hardcoded for MNIST so we can catch any bugs is this breaks
-        return torch.reshape(x, (x.shape[1], 784))
+        return x.flatten(1)
 
 
-if __name__ == '__main__':
-    import matplotlib.pyplot as plt
-    import numpy as np
+class FastConv2D(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
+        super(FastConv2D, self).__init__()
+        self.weight = Parameter(torch.Tensor(out_channels, in_channels, kernel_size, kernel_size), requires_grad=False)
+        self.bias = Parameter(torch.Tensor(out_channels), requires_grad=False)
+        self.stride = stride
+        self.padding = padding
 
-
-    def optimize(attempts, steps_per_attempt, weights, biases, learning_rate=0.005):
-        loss_history = np.empty((attempts, steps_per_attempt))
-        num_layers = weights.shape[0]
-        # Initialize weights and biases
-        x0, y0, eta = 1 / 8, 1 / 8, .1
-        for attempt in range(attempts):
-            # Initialize lambdas
-            lambdas = torch.rand(num_layers, 2, requires_grad=True)
-            # Gradient descent loop
-            for step in range(steps_per_attempt):
-                # First layer of network
-                layer = torch.transpose(tensor([[x0, eta, 0], [y0, 0, eta]]), 0, 1).requires_grad_()
-                # apply network layers
-                for w, b, l in zip(weights, biases, lambdas):
-                    layer = torch.matmul(w, layer)
-                    for n, b_ in zip(layer, b):
-                        n[0] += b_[0]
-                    layer = ReLU(l)(layer)
-
-                # Compute loss and update gradients
-                loss = box(layer[1] - layer[0])[1]
-                loss_history[attempt][step] = loss
-                loss.backward()
-                if lambdas.grad is not None:
-                    lambdas = torch.clamp(lambdas - learning_rate * lambdas.grad, 0,
-                                          1).clone().detach_().requires_grad_(True)
-        return loss_history
-
-
-    num_layers = 20
-    weights = torch.randn(num_layers, 2, 2)
-    biases = torch.randn(num_layers, 2, 1) / 4
-    with torch.autograd.set_detect_anomaly(True):
-        plt.plot(np.transpose(optimize(5, 10, weights, biases, learning_rate=.05)))
-    plt.xlabel("Training Step")
-    plt.ylabel("Loss")
-    plt.show()
+    def forward(self, img):
+        img = F.conv2d(img, self.weight, None, stride=self.stride, padding=self.padding)
+        img[0] += self.bias.view(-1, 1, 1)
+        return img

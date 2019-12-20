@@ -4,8 +4,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+wandb/
 # C extensions
+*/mnist_data/
+mnist_data/
 *.so
 .idea/other.xml
 # Distribution / packaging
@@ -209,3 +211,12 @@ fabric.properties
 .idea/modules.xml
 .idea/vcs.xml
 .DS_Store
+/wandb/
+!/wandb/
+
+# Clean Master
+wandb/
+notebooks/
+
+#datasets
+mnist_data/
